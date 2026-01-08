@@ -11,6 +11,12 @@ node_modules/
 dist/
 
 # Python
+.venv/
+.pytest_cache/
+__pycache__/
+uploads/
+*.db
+hrms.db
 backend-flask/.venv/
 backend-flask/__pycache__/
 backend-flask/.pytest_cache/

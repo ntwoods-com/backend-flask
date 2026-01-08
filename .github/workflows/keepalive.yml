@@ -1,0 +1,16 @@
+name: Keepalive Ping
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    if: ${{ secrets.RENDER_HEALTH_URL != '' }}
+    steps:
+      - name: Ping /health
+        run: |
+          set -euo pipefail
+          curl -fsSL "${{ secrets.RENDER_HEALTH_URL }}" >/dev/null

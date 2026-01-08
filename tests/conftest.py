@@ -1,9 +1,7 @@
-import os
 import sys
 from pathlib import Path
 
 import pytest
-
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
@@ -12,23 +10,17 @@ if str(BACKEND_ROOT) not in sys.path:
 
 @pytest.fixture()
 def app_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    db_path = tmp_path / "test.db"
-
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path.as_posix()}")
-    monkeypatch.setenv("GOOGLE_CLIENT_ID", "test-google-client-id")
-    monkeypatch.setenv("PEPPER", "test-pepper")
-    monkeypatch.setenv("AUTH_ALLOW_TEST_TOKENS", "1")
+    monkeypatch.setenv("ENV", "testing")
+    monkeypatch.setenv("MONGODB_URI", "mongomock://localhost")
+    monkeypatch.setenv("DB_NAME", "hrms_test")
+    monkeypatch.setenv("JWT_SECRET", "test-secret")
+    monkeypatch.setenv("BOOTSTRAP_TOKEN", "test-bootstrap")
     monkeypatch.setenv("LOG_LEVEL", "WARNING")
 
-    # Prevent accidental pollution from any existing env config.
-    monkeypatch.delenv("UPLOAD_DIR", raising=False)
-    monkeypatch.delenv("ALLOWED_ORIGINS", raising=False)
-
     from app import create_app
-    from cache_layer import cache_clear
+    from app.db import reset_client_for_tests
 
-    cache_clear()
-
+    reset_client_for_tests()
     app = create_app()
     app.testing = True
 
