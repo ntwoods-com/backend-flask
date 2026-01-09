@@ -1,0 +1,23 @@
+name: Keepalive Ping
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: keepalive
+  cancel-in-progress: false
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    if: ${{ secrets.RENDER_HEALTH_URL != '' }}
+    steps:
+      - name: Ping /health
+        env:
+          URL: ${{ secrets.RENDER_HEALTH_URL }}
+        run: |
+          set -euo pipefail
+          curl -fsSL --max-time 10 --retry 2 --retry-all-errors "$URL" >/dev/null
