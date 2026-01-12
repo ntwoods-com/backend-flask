@@ -6,6 +6,7 @@ from sqlalchemy import func, select
 
 from actions.helpers import append_audit, next_prefixed_id
 from auth import permissions_for_role
+from cache_layer import cache_invalidate_prefix
 from models import AuditLog, JobTemplate, Permission, Role, Setting, User
 from utils import ApiError, AuthContext, iso_utc_now, normalize_role
 from pii import decrypt_pii, encrypt_pii, hash_email, hash_name, mask_email, mask_name
@@ -273,6 +274,7 @@ def roles_upsert(data, auth: AuthContext | None, db, cfg):
             at=now,
         )
 
+    cache_invalidate_prefix("RBAC:")
     return {"roleCode": role_code}
 
 
@@ -365,6 +367,7 @@ def permissions_upsert(data, auth: AuthContext | None, db, cfg):
         at=now,
     )
 
+    cache_invalidate_prefix("RBAC:")
     return {"upserted": upserted, "appended": appended}
 
 

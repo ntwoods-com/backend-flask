@@ -60,3 +60,29 @@ class Config:
 
         # Tests/dev only: bypass Google token verification.
         self.AUTH_ALLOW_TEST_TOKENS = os.getenv("AUTH_ALLOW_TEST_TOKENS", "0") == "1"
+
+    @property
+    def IS_PRODUCTION(self) -> bool:
+        return str(self.APP_ENV or "").strip().lower() in {"prod", "production"}
+
+    def validate(self) -> None:
+        pepper = str(self.PEPPER or "").strip()
+        if not pepper:
+            raise RuntimeError("PEPPER must be set")
+        if self.IS_PRODUCTION and len(pepper) < 16:
+            raise RuntimeError("PEPPER must be a long random string in production")
+
+        if self.IS_PRODUCTION and str(self.DATABASE_URL or "").startswith("sqlite"):
+            raise RuntimeError("DATABASE_URL must be Postgres in production (Supabase recommended)")
+
+        if self.IS_PRODUCTION and not str(self.GOOGLE_CLIENT_ID or "").strip():
+            raise RuntimeError("GOOGLE_CLIENT_ID must be set in production")
+
+        if self.IS_PRODUCTION and any(str(o or "").strip() == "*" for o in (self.ALLOWED_ORIGINS or [])):
+            raise RuntimeError("ALLOWED_ORIGINS must not contain '*' in production")
+
+        if self.IS_PRODUCTION and self.AUTH_ALLOW_TEST_TOKENS:
+            raise RuntimeError("AUTH_ALLOW_TEST_TOKENS must be disabled in production")
+
+        if str(self.FILE_STORAGE_MODE or "").strip().lower() == "gas" and not str(self.GAS_UPLOAD_URL or "").strip():
+            raise RuntimeError("GAS_UPLOAD_URL must be set when FILE_STORAGE_MODE=gas")

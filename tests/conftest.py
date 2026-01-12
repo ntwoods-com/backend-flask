@@ -10,17 +10,26 @@ if str(BACKEND_ROOT) not in sys.path:
 
 @pytest.fixture()
 def app_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("ENV", "testing")
-    monkeypatch.setenv("MONGODB_URI", "mongomock://localhost")
-    monkeypatch.setenv("DB_NAME", "hrms_test")
-    monkeypatch.setenv("JWT_SECRET", "test-secret")
-    monkeypatch.setenv("BOOTSTRAP_TOKEN", "test-bootstrap")
+    db_path = tmp_path / "hrms_test.db"
+    upload_dir = tmp_path / "uploads"
+
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path.as_posix()}")
+
+    monkeypatch.setenv("PEPPER", "test-pepper-1234567890")
+    monkeypatch.setenv("PII_ENC_KEY", "test-pii-key")
+
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "test-google-client-id")
+    monkeypatch.setenv("AUTH_ALLOW_TEST_TOKENS", "1")
+
+    monkeypatch.setenv("ALLOWED_ORIGINS", "http://localhost:5173")
+    monkeypatch.setenv("FILE_STORAGE_MODE", "local")
+    monkeypatch.setenv("UPLOAD_DIR", str(upload_dir))
+
     monkeypatch.setenv("LOG_LEVEL", "WARNING")
 
-    from app import create_app
-    from app.db import reset_client_for_tests
+    from legacy_app import create_app
 
-    reset_client_for_tests()
     app = create_app()
     app.testing = True
 

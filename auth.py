@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -8,6 +9,7 @@ from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token as google_id_token
 from sqlalchemy import select
 
+from cache_layer import cache_get, cache_set
 from models import Permission, Role, Session as DbSession
 from utils import ApiError, AuthContext, normalize_role, parse_roles_csv, sha256_hex, iso_utc_now, new_uuid
 
@@ -131,6 +133,12 @@ STATIC_RBAC_PERMISSIONS: dict[str, list[str]] = {
 }
 
 
+_RBAC_CACHE_PREFIX = "RBAC:"
+_RBAC_ROLES_INDEX_KEY = f"{_RBAC_CACHE_PREFIX}ROLES_INDEX"
+_RBAC_RULE_PREFIX = f"{_RBAC_CACHE_PREFIX}RULE:"
+_RBAC_PERMS_FOR_ROLE_PREFIX = f"{_RBAC_CACHE_PREFIX}PERMS_FOR_ROLE:"
+
+
 def is_public_action(action: str) -> bool:
     return str(action or "").upper() in PUBLIC_ACTIONS
 
@@ -237,7 +245,19 @@ def validate_session_token(db, token: Any) -> AuthContext:
     if exp_dt and exp_dt < datetime.now(timezone.utc):
         return AuthContext(valid=False, userId="", email="", role="", expiresAt="")
 
-    ses.lastSeenAt = iso_utc_now()
+    # Avoid writing on every request: update lastSeenAt at most once per interval.
+    try:
+        interval_s = int(str(os.getenv("SESSION_LAST_SEEN_UPDATE_SECONDS", "300") or "300"))
+    except Exception:
+        interval_s = 300
+
+    if interval_s <= 0:
+        ses.lastSeenAt = iso_utc_now()
+    else:
+        last_seen = getattr(ses, "lastSeenAt", "") or ""
+        last_dt = _parse_iso_utc_maybe(last_seen)
+        if not last_dt or (datetime.now(timezone.utc) - last_dt).total_seconds() >= interval_s:
+            ses.lastSeenAt = iso_utc_now()
 
     return AuthContext(
         valid=True,
@@ -253,6 +273,14 @@ def get_permission_rule(db, perm_type: str, perm_key: str) -> Optional[dict[str,
     perm_key_u = str(perm_key or "").upper().strip()
     if not perm_type_u or not perm_key_u:
         return None
+
+    cache_key = f"{_RBAC_RULE_PREFIX}{perm_type_u}:{perm_key_u}"
+    cached = cache_get(cache_key)
+    if cached is False:
+        return None
+    if isinstance(cached, dict):
+        return cached
+
     row = (
         db.execute(
             select(Permission).where(Permission.permType == perm_type_u).where(Permission.permKey == perm_key_u)
@@ -261,20 +289,28 @@ def get_permission_rule(db, perm_type: str, perm_key: str) -> Optional[dict[str,
         .first()
     )
     if not row:
+        cache_set(cache_key, False)
         return None
-    return {
+    out = {
         "enabled": bool(row.enabled),
         "roles": parse_roles_csv(row.rolesCsv or ""),
         "rolesCsv": row.rolesCsv or "",
     }
+    cache_set(cache_key, out)
+    return out
 
 
 def _roles_index(db) -> dict[str, dict[str, Any]]:
+    cached = cache_get(_RBAC_ROLES_INDEX_KEY)
+    if isinstance(cached, dict):
+        return cached
+
     rows = db.execute(select(Role)).scalars().all()
     out: dict[str, dict[str, Any]] = {}
     if not rows:
         for rc in ["ADMIN", "EA", "HR", "OWNER", "EMPLOYEE"]:
             out[rc] = {"roleCode": rc, "roleName": rc, "status": "ACTIVE"}
+        cache_set(_RBAC_ROLES_INDEX_KEY, out)
         return out
     for r in rows:
         code = normalize_role(r.roleCode)
@@ -285,6 +321,7 @@ def _roles_index(db) -> dict[str, dict[str, Any]]:
             "roleName": str(r.roleName or code),
             "status": str(r.status or "ACTIVE").upper(),
         }
+    cache_set(_RBAC_ROLES_INDEX_KEY, out)
     return out
 
 
@@ -341,6 +378,11 @@ def permissions_for_role(db, role: str) -> dict[str, Any]:
     if not role_u:
         raise ApiError("AUTH_INVALID", "Login required")
 
+    cache_key = f"{_RBAC_PERMS_FOR_ROLE_PREFIX}{role_u}"
+    cached = cache_get(cache_key)
+    if isinstance(cached, dict):
+        return cached
+
     ui_keys: list[str] = []
     action_keys: list[str] = []
 
@@ -361,7 +403,9 @@ def permissions_for_role(db, role: str) -> dict[str, Any]:
     ui_keys.sort()
     action_keys.sort()
     portal_keys = [k for k in ui_keys if k.startswith("PORTAL_")]
-    return {"role": role_u, "uiKeys": ui_keys, "portalKeys": portal_keys, "actionKeys": action_keys}
+    out = {"role": role_u, "uiKeys": ui_keys, "portalKeys": portal_keys, "actionKeys": action_keys}
+    cache_set(cache_key, out)
+    return out
 
 
 def serialize_auth(auth: AuthContext) -> dict[str, Any]:

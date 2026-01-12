@@ -466,6 +466,7 @@ def _seed_sla_config(db):
 def create_app() -> Flask:
     load_dotenv()
     cfg = Config()
+    cfg.validate()
     _configure_logging(cfg.LOG_LEVEL)
 
     engine = init_engine(cfg.DATABASE_URL)
@@ -512,6 +513,18 @@ def create_app() -> Flask:
     def _before():
         g.request_id = os.urandom(8).hex()
         g.start_ts = now_monotonic()
+
+    @app.after_request
+    def _after(resp):
+        try:
+            resp.headers["X-Request-ID"] = str(getattr(g, "request_id", "") or "")
+        except Exception:
+            pass
+        resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+        resp.headers.setdefault("X-Frame-Options", "DENY")
+        resp.headers.setdefault("Referrer-Policy", "no-referrer")
+        resp.headers.setdefault("Cache-Control", "no-store")
+        return resp
 
     @app.get("/health")
     def health():

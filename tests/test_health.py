@@ -3,20 +3,12 @@ from __future__ import annotations
 
 def test_health_ok(app_client):
     _app, client = app_client
+
     res = client.get("/health")
     assert res.status_code == 200
-    data = res.get_json()
-    assert data["status"] == "ok"
-    assert data["db"] == "ok"
-    assert "time" in data
-    assert "version" in data
+    assert res.headers.get("X-Request-ID")
 
+    body = res.get_json()
+    assert body["ok"] is True
+    assert body["data"]["status"] == "ok"
 
-def test_version(app_client):
-    _app, client = app_client
-    res = client.get("/version")
-    assert res.status_code == 200
-    data = res.get_json()
-    assert "version" in data
-    assert "env" in data
-    assert "time" in data
