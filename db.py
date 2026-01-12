@@ -28,6 +28,34 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return raw in {"1", "true", "yes", "y", "on"}
 
 
+def _normalize_database_url(database_url: str) -> str:
+    """
+    Keep production configuration ergonomic:
+
+    - Supabase commonly provides `postgresql://...` (no explicit driver).
+    - Some platforms use `postgres://...`.
+    - We standardize on psycopg (psycopg3) to avoid psycopg2 build issues on newer Pythons.
+    """
+
+    s = str(database_url or "").strip()
+    if not s:
+        return s
+
+    if s.startswith("postgresql+psycopg://"):
+        return s
+
+    if s.startswith("postgresql+psycopg2://"):
+        return "postgresql+psycopg://" + s[len("postgresql+psycopg2://") :]
+
+    if s.startswith("postgresql://"):
+        return "postgresql+psycopg://" + s[len("postgresql://") :]
+
+    if s.startswith("postgres://"):
+        return "postgresql+psycopg://" + s[len("postgres://") :]
+
+    return s
+
+
 def _pool_kwargs(database_url: str) -> dict:
     """
     QueuePool tuning (Postgres/MySQL/etc). Keep defaults conservative to avoid
@@ -57,6 +85,8 @@ def _pool_kwargs(database_url: str) -> dict:
 def init_engine(database_url: str):
     global engine
 
+    database_url = _normalize_database_url(database_url)
+
     connect_args = {}
     if database_url.startswith("sqlite"):
         connect_args = {"check_same_thread": False}
@@ -85,7 +115,7 @@ def init_shard_engines(database_urls: list[str]):
     `engine_for_owner()` to pick a bind and create a dedicated Session.
     """
     global shard_engines
-    urls = [str(u or "").strip() for u in (database_urls or []) if str(u or "").strip()]
+    urls = [_normalize_database_url(str(u or "").strip()) for u in (database_urls or []) if str(u or "").strip()]
     shard_engines = []
     if not urls:
         return shard_engines
