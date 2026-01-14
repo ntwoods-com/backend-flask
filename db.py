@@ -5,6 +5,7 @@ import re
 
 from sqlalchemy import create_engine
 from sqlalchemy.engine import URL
+from sqlalchemy.exc import ArgumentError
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 from sharding import pick_shard_index
@@ -44,6 +45,13 @@ def _normalize_database_url(database_url: str) -> str:
     s = str(database_url or "").strip()
     if not s:
         return s
+
+    # Common mispaste: an env var value accidentally includes a leading key (e.g. `user=postgresql://...`).
+    # `sqlalchemy.create_engine()` can't parse this, but we can safely strip the prefix.
+    # This keeps `.env` ergonomics forgiving without changing intended URLs.
+    m = re.match(r"^(?:user|username|url|database_url)\s*=\s*([a-zA-Z][a-zA-Z0-9+.-]*://.*)$", s)
+    if m:
+        s = m.group(1).strip()
 
     # Accept libpq-style conninfo strings (commonly copy/pasted from provider dashboards).
     # Example: `user=foo password=bar host=example.com port=5432 dbname=baz sslmode=require`
@@ -148,6 +156,11 @@ def init_engine(database_url: str):
     global engine
 
     database_url = _normalize_database_url(database_url)
+    if not str(database_url or "").strip():
+        raise ArgumentError(
+            "DATABASE_URL is empty. Set DATABASE_URL in your environment or `.env` "
+            "(e.g. `sqlite:///./hrms.db` or `postgresql+psycopg://user:pass@host:5432/db?sslmode=require`)."
+        )
 
     connect_args = {}
     if database_url.startswith("sqlite"):
@@ -158,13 +171,21 @@ def init_engine(database_url: str):
             connect_args = {"sslmode": sslmode}
 
     pool_pre_ping = _env_bool("DB_POOL_PRE_PING", True)
-    engine = create_engine(
-        database_url,
-        future=True,
-        pool_pre_ping=pool_pre_ping,
-        connect_args=connect_args,
-        **_pool_kwargs(database_url),
-    )
+    try:
+        engine = create_engine(
+            database_url,
+            future=True,
+            pool_pre_ping=pool_pre_ping,
+            connect_args=connect_args,
+            **_pool_kwargs(database_url),
+        )
+    except ArgumentError as e:
+        raise ArgumentError(
+            "Invalid DATABASE_URL. Set DATABASE_URL to a valid SQLAlchemy URL "
+            "(e.g. `sqlite:///./hrms.db` for local dev or "
+            "`postgresql+psycopg://user:pass@host:5432/db?sslmode=require` for Postgres). "
+            "If you pasted a libpq conninfo string (`user=... password=... host=... dbname=...`), that's also supported."
+        ) from e
     SessionLocal.configure(bind=engine)
     return engine
 
