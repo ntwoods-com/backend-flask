@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import os
+import re
 
 from sqlalchemy import create_engine
+from sqlalchemy.engine import URL
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 from sharding import pick_shard_index
@@ -34,12 +36,72 @@ def _normalize_database_url(database_url: str) -> str:
 
     - Supabase commonly provides `postgresql://...` (no explicit driver).
     - Some platforms use `postgres://...`.
+    - Some platforms/tools provide libpq-style conninfo strings:
+      `user=... password=... host=... port=... dbname=...` (optionally without spaces).
     - We standardize on psycopg (psycopg3) to avoid psycopg2 build issues on newer Pythons.
     """
 
     s = str(database_url or "").strip()
     if not s:
         return s
+
+    # Accept libpq-style conninfo strings (commonly copy/pasted from provider dashboards).
+    # Example: `user=foo password=bar host=example.com port=5432 dbname=baz sslmode=require`
+    # Some copy flows omit spaces between pairs; handle both.
+    if "://" not in s and ("host=" in s.lower() or "dbname=" in s.lower() or "database=" in s.lower()):
+        lowered = s.lower()
+        # Only attempt conversion when it looks like key/value pairs (avoid mangling arbitrary strings).
+        if any(k in lowered for k in ("user=", "username=")) and any(k in lowered for k in ("password=", "pass=")):
+            keys = ("user", "username", "password", "pass", "host", "port", "dbname", "database", "sslmode")
+            occurrences: list[tuple[int, str]] = []
+            for key in keys:
+                for match in re.finditer(re.escape(key) + r"\s*=", lowered):
+                    occurrences.append((match.start(), key))
+            occurrences.sort(key=lambda t: t[0])
+
+            if occurrences:
+                parts: dict[str, str] = {}
+                for idx, (pos, key) in enumerate(occurrences):
+                    start = pos + len(key)
+                    # Skip optional whitespace before '='.
+                    while start < len(s) and s[start].isspace():
+                        start += 1
+                    if start >= len(s) or s[start] != "=":
+                        continue
+                    start += 1  # '='
+                    while start < len(s) and s[start].isspace():
+                        start += 1
+
+                    end = occurrences[idx + 1][0] if idx + 1 < len(occurrences) else len(s)
+                    value = s[start:end].strip().rstrip(";").strip()
+                    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+                        value = value[1:-1]
+                    if value:
+                        parts[key] = value
+
+                username = parts.get("user") or parts.get("username")
+                password = parts.get("password") or parts.get("pass")
+                host = parts.get("host")
+                database = parts.get("dbname") or parts.get("database")
+                port_raw = parts.get("port")
+                port = None
+                if port_raw and str(port_raw).isdigit():
+                    port = int(port_raw)
+
+                if host and database and username and password:
+                    query = {}
+                    sslmode = parts.get("sslmode")
+                    if sslmode:
+                        query["sslmode"] = sslmode
+                    return URL.create(
+                        drivername="postgresql+psycopg",
+                        username=username,
+                        password=password,
+                        host=host,
+                        port=port,
+                        database=database,
+                        query=query or None,
+                    ).render_as_string(hide_password=False)
 
     if s.startswith("postgresql+psycopg://"):
         return s
