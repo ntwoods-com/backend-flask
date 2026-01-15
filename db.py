@@ -201,7 +201,10 @@ def init_engine(database_url: str):
         if sslmode and database_url.startswith("postgresql"):
             connect_args = {"sslmode": sslmode}
         if _should_disable_prepared_statements(database_url):
-            connect_args.setdefault("prepare_threshold", 0)
+            # psycopg3 uses server-side prepared statements by default. Setting
+            # prepare_threshold=None disables them entirely (required for PgBouncer
+            # transaction pooling / Supabase pooler endpoints).
+            connect_args["prepare_threshold"] = None
 
     pool_pre_ping = _env_bool("DB_POOL_PRE_PING", True)
     try:
@@ -245,7 +248,7 @@ def init_shard_engines(database_urls: list[str]):
             if sslmode and url.startswith("postgresql"):
                 connect_args = {"sslmode": sslmode}
             if _should_disable_prepared_statements(url):
-                connect_args.setdefault("prepare_threshold", 0)
+                connect_args["prepare_threshold"] = None
         shard_engines.append(
             create_engine(
                 url,

@@ -61,7 +61,8 @@ def test_init_engine_sets_prepare_threshold_for_pooler(monkeypatch):
         "postgresql+psycopg://postgres.myref:pass@aws-1-ap-south-1.pooler.supabase.com:6543/postgres"
     )
 
-    assert captured["connect_args"].get("prepare_threshold") == 0
+    assert "prepare_threshold" in captured["connect_args"]
+    assert captured["connect_args"].get("prepare_threshold") is None
 
 
 def test_init_engine_does_not_set_prepare_threshold_for_non_pooler(monkeypatch):
