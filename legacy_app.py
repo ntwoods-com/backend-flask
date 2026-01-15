@@ -14,6 +14,7 @@ from typing import Any
 from dotenv import load_dotenv
 from flask import Blueprint, Flask, current_app, g, request, send_file
 from flask_cors import CORS
+from sqlalchemy.exc import DBAPIError
 from zoneinfo import ZoneInfo
 
 from actions import dispatch
@@ -719,13 +720,59 @@ def create_app() -> Flask:
                 db.rollback()
             _write_error_audit(cfg2, action_u, auth_ctx, data, e)
             return err(e.code, e.message, http_status=e.http_status)[0], e.http_status
-        except Exception:
+        except DBAPIError as e:
             if db is not None:
                 db.rollback()
-            api_err = ApiError("INTERNAL", "Unexpected error")
+
+            request_id = str(getattr(g, "request_id", "") or "").strip()
+            orig = getattr(e, "orig", None)
+            orig_msg = str(orig) if orig else ""
+            orig_msg = re.sub(r"\s+", " ", orig_msg).strip()
+            if len(orig_msg) > 300:
+                orig_msg = orig_msg[:300] + "..."
+
+            if cfg2.IS_PRODUCTION:
+                msg = f"Database error (requestId: {request_id})" if request_id else "Database error"
+            else:
+                detail = f": {orig_msg}" if orig_msg else ""
+                msg = f"Database error{detail} (requestId: {request_id})" if request_id else f"Database error{detail}"
+
+            api_err = ApiError("INTERNAL", msg, http_status=500)
             _write_error_audit(cfg2, action_u, auth_ctx, data, api_err)
-            logging.getLogger("api").exception("request_id=%s action=%s", g.request_id, action_u)
-            return err(api_err.code, api_err.message)[0]
+            logging.getLogger("api").exception("request_id=%s action=%s", request_id, action_u)
+            return err(api_err.code, api_err.message, http_status=api_err.http_status)[0], api_err.http_status
+        except Exception as e:
+            if db is not None:
+                db.rollback()
+
+            request_id = str(getattr(g, "request_id", "") or "").strip()
+            if cfg2.IS_PRODUCTION:
+                msg = f"Unexpected error (requestId: {request_id})" if request_id else "Unexpected error"
+            else:
+                debug_details = str(os.getenv("DEBUG_ERROR_DETAILS", "") or "").strip().lower() in {
+                    "1",
+                    "true",
+                    "yes",
+                    "y",
+                    "on",
+                }
+                detail = type(e).__name__
+                if debug_details:
+                    raw_msg = re.sub(r"\s+", " ", str(e) or "").strip()
+                    if raw_msg:
+                        if len(raw_msg) > 300:
+                            raw_msg = raw_msg[:300] + "..."
+                        detail = f"{detail}: {raw_msg}"
+                msg = (
+                    f"Unexpected error: {detail} (requestId: {request_id})"
+                    if request_id
+                    else f"Unexpected error: {detail}"
+                )
+
+            api_err = ApiError("INTERNAL", msg, http_status=500)
+            _write_error_audit(cfg2, action_u, auth_ctx, data, api_err)
+            logging.getLogger("api").exception("request_id=%s action=%s", request_id, action_u)
+            return err(api_err.code, api_err.message, http_status=api_err.http_status)[0], api_err.http_status
         finally:
             if db is not None:
                 db.close()

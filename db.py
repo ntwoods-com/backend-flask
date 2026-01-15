@@ -4,7 +4,7 @@ import os
 import re
 
 from sqlalchemy import create_engine
-from sqlalchemy.engine import URL
+from sqlalchemy.engine import URL, make_url
 from sqlalchemy.exc import ArgumentError
 from sqlalchemy.orm import declarative_base, sessionmaker
 
@@ -29,6 +29,37 @@ def _env_bool(name: str, default: bool = False) -> bool:
     if not raw:
         return default
     return raw in {"1", "true", "yes", "y", "on"}
+
+
+def _should_disable_prepared_statements(database_url: str) -> bool:
+    """
+    Supabase "pooler" endpoints are typically PgBouncer in transaction pooling mode.
+    Server-side prepared statements don't work reliably there (connections switch between
+    transactions), so disable them for stability.
+    """
+
+    if _env_bool("DB_DISABLE_PREPARED_STATEMENTS", False):
+        return True
+
+    s = str(database_url or "").strip()
+    if not s.startswith("postgresql"):
+        return False
+
+    host = ""
+    port = 0
+    try:
+        u = make_url(s)
+        host = str(u.host or "").lower()
+        port = int(u.port or 0)
+    except Exception:
+        host = s.lower()
+
+    # Supabase pooler commonly uses port 6543 and `*.pooler.supabase.com` hosts.
+    if port == 6543:
+        return True
+    if "pooler.supabase.com" in host:
+        return True
+    return False
 
 
 def _normalize_database_url(database_url: str) -> str:
@@ -162,13 +193,15 @@ def init_engine(database_url: str):
             "(e.g. `sqlite:///./hrms.db` or `postgresql+psycopg://user:pass@host:5432/db?sslmode=require`)."
         )
 
-    connect_args = {}
+    connect_args: dict[str, object] = {}
     if database_url.startswith("sqlite"):
         connect_args = {"check_same_thread": False}
     else:
         sslmode = str(os.getenv("DB_SSLMODE", "") or "").strip()
         if sslmode and database_url.startswith("postgresql"):
             connect_args = {"sslmode": sslmode}
+        if _should_disable_prepared_statements(database_url):
+            connect_args.setdefault("prepare_threshold", 0)
 
     pool_pre_ping = _env_bool("DB_POOL_PRE_PING", True)
     try:
@@ -204,13 +237,15 @@ def init_shard_engines(database_urls: list[str]):
         return shard_engines
 
     for url in urls:
-        connect_args = {}
+        connect_args: dict[str, object] = {}
         if url.startswith("sqlite"):
             connect_args = {"check_same_thread": False}
         else:
             sslmode = str(os.getenv("DB_SSLMODE", "") or "").strip()
             if sslmode and url.startswith("postgresql"):
                 connect_args = {"sslmode": sslmode}
+            if _should_disable_prepared_statements(url):
+                connect_args.setdefault("prepare_threshold", 0)
         shard_engines.append(
             create_engine(
                 url,
