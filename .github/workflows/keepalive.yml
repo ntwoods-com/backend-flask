@@ -2,6 +2,7 @@ name: Keepalive Ping
 
 on:
   schedule:
+    # Ping every 10 minutes to keep Render service awake
     - cron: "*/10 * * * *"
   workflow_dispatch:
 
@@ -9,17 +10,50 @@ concurrency:
   group: keepalive
   cancel-in-progress: false
 
+env:
+  MAX_RETRIES: 3
+  TIMEOUT_SECONDS: 15
+
 jobs:
   ping:
+    name: Health Check Ping
     runs-on: ubuntu-latest
-    timeout-minutes: 2
-    if: ${{ secrets.RENDER_HEALTH_URL != '' }}
+    timeout-minutes: 3
     steps:
-      - name: Ping /health
+      - name: Ping Backend Health Endpoint
         env:
-          URL: ${{ secrets.RENDER_HEALTH_URL }}
+          HEALTH_URL: ${{ vars.RENDER_HEALTH_URL }}
         run: |
           set -euo pipefail
-          URL="$(printf '%s' "$URL" | tr -d '\r\n' | sed 's/^ *//; s/ *$//')"
-          [ -n "$URL" ] || (echo "RENDER_HEALTH_URL is empty" && exit 1)
-          curl -fsSL --max-time 10 --retry 2 --retry-all-errors "$URL" >/dev/null
+          
+          # Clean URL
+          URL="$(printf '%s' "$HEALTH_URL" | tr -d '\r\n' | sed 's/^ *//; s/ *$//')"
+          
+          if [ -z "$URL" ]; then
+            echo "::notice::RENDER_HEALTH_URL is not configured - skipping ping"
+            exit 0
+          fi
+          
+          echo "🔄 Pinging: $URL"
+          
+          # Perform health check with retries
+          HTTP_CODE=$(curl -fsSL \
+            --max-time ${{ env.TIMEOUT_SECONDS }} \
+            --retry ${{ env.MAX_RETRIES }} \
+            --retry-all-errors \
+            --retry-delay 5 \
+            -w "%{http_code}" \
+            -o /dev/null \
+            "$URL") || true
+          
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "✅ Health check passed (HTTP $HTTP_CODE)"
+            echo "### ✅ Backend Keepalive Successful" >> $GITHUB_STEP_SUMMARY
+            echo "- **Endpoint:** $URL" >> $GITHUB_STEP_SUMMARY
+            echo "- **Status:** HTTP $HTTP_CODE" >> $GITHUB_STEP_SUMMARY
+            echo "- **Time:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "::warning::Health check returned HTTP $HTTP_CODE"
+            echo "### ⚠️ Backend Keepalive Warning" >> $GITHUB_STEP_SUMMARY
+            echo "- **Status:** HTTP $HTTP_CODE" >> $GITHUB_STEP_SUMMARY
+          fi

@@ -112,6 +112,15 @@ from .dynamic_tests import (
 )
 from .fail_candidates import fail_candidates_list
 from .metrics_actions import sla_config_get, sla_config_upsert, step_metrics_query
+from .analytics_actions import (
+    candidate_pipeline_stats,
+    dashboard_metrics,
+    hiring_trends,
+    source_distribution,
+    sla_compliance_metrics,
+    recent_activity,
+    export_analytics_report,
+)
 
 
 Handler = Callable[[dict[str, Any], AuthContext | None, Any, Any], Any]
@@ -223,6 +232,14 @@ ACTION_HANDLERS: dict[str, Handler] = {
     "REJECTION_LOG_LIST": rejection_log_list,
     "REJECT_REVERT": reject_revert,
     "HOLD_EXPIRY_CRON": hold_expiry_cron,
+    # Analytics actions
+    "CANDIDATE_PIPELINE_STATS": candidate_pipeline_stats,
+    "DASHBOARD_METRICS": dashboard_metrics,
+    "HIRING_TRENDS": hiring_trends,
+    "SOURCE_DISTRIBUTION": source_distribution,
+    "SLA_COMPLIANCE_METRICS": sla_compliance_metrics,
+    "RECENT_ACTIVITY": recent_activity,
+    "EXPORT_ANALYTICS_REPORT": export_analytics_report,
 }
 
 
