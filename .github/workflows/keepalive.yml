@@ -18,4 +18,7 @@ jobs:
       - name: Ping /health
         run: |
           set -euo pipefail
-          curl -fsSL --max-time 10 --retry 2 --retry-all-errors "${{ vars.RENDER_HEALTH_URL }}" >/dev/null
+            URL="${{ vars.RENDER_HEALTH_URL }}"
+            URL="$(printf '%s' "$URL" | tr -d '\r\n' | sed 's/^ *//; s/ *$//')"
+            [ -n "$URL" ] || (echo "RENDER_HEALTH_URL is empty" && exit 1)
+            curl -fsSL --max-time 10 --retry 2 --retry-all-errors "$URL" >/dev/null
