@@ -42,8 +42,8 @@ def users_list(data, auth: AuthContext | None, db, cfg):
 
         item = {
             "userId": u.userId or "",
-            "email": email_full or (u.userId or ""),
-            "fullName": name_full or (u.userId or ""),
+            "email": email_full or (u.email_masked or "") or (u.userId or ""),
+            "fullName": name_full or (u.name_masked or "") or (u.userId or ""),
             "role": u.role or "",
             "status": u.status or "",
             "lastLoginAt": u.lastLoginAt or "",

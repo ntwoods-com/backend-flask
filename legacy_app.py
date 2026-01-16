@@ -336,6 +336,7 @@ def _seed_roles_and_permissions(db):
         ("UI", "PORTAL_OWNER", "OWNER,ADMIN", True),
         ("UI", "PORTAL_EA_TECH", "EA,ADMIN", True),
         ("UI", "PORTAL_REJECTION_LOG", "EA,HR,ADMIN", True),
+        ("UI", "PORTAL_ANALYTICS", "HR,ADMIN", True),
         ("UI", "PORTAL_EMPLOYEE_PROFILE", "EA,HR,OWNER,ADMIN", True),
         ("UI", "PORTAL_FAIL_CANDIDATES", "HR,ADMIN", True),
         ("UI", "PORTAL_TESTS", "HR,EA,ADMIN,ACCOUNTS,MIS,DEO", True),

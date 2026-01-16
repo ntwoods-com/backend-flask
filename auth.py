@@ -130,6 +130,14 @@ STATIC_RBAC_PERMISSIONS: dict[str, list[str]] = {
     "REJECT_REVERT": ["ADMIN"],
     "HOLD_REVERT": ["ADMIN", "OWNER", "EA"],
     "HOLD_EXPIRY_CRON": ["ADMIN"],
+    # Analytics
+    "CANDIDATE_PIPELINE_STATS": ["ADMIN", "HR"],
+    "DASHBOARD_METRICS": ["ADMIN", "HR"],
+    "HIRING_TRENDS": ["ADMIN", "HR"],
+    "SOURCE_DISTRIBUTION": ["ADMIN", "HR"],
+    "SLA_COMPLIANCE_METRICS": ["ADMIN", "HR"],
+    "RECENT_ACTIVITY": ["ADMIN", "HR"],
+    "EXPORT_ANALYTICS_REPORT": ["ADMIN", "HR"],
 }
 
 

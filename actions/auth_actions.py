@@ -215,8 +215,8 @@ def get_me(data, auth: AuthContext | None, db, cfg):
     return {
         "me": {
             "userId": user.userId,
-            "email": email_full or "",
-            "fullName": name_full or user.userId,
+            "email": email_full or (user.email_masked or ""),
+            "fullName": name_full or (user.name_masked or user.userId),
             "role": normalize_role(user.role),
         }
     }

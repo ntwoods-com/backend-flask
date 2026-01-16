@@ -6,13 +6,12 @@ and other advanced analytics features.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta
-from typing import Any
+from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, select, and_, case, distinct
+from sqlalchemy import and_, func, select
 
 from models import AuditLog, Candidate, Requirement, SLAConfig, StepMetric
-from utils import AuthContext, iso_utc_now
+from utils import AuthContext, to_iso_utc
 
 
 def candidate_pipeline_stats(data, auth: AuthContext | None, db, cfg) -> dict:
@@ -52,8 +51,8 @@ def candidate_pipeline_stats(data, auth: AuthContext | None, db, cfg) -> dict:
 
 def dashboard_metrics(data, auth: AuthContext | None, db, cfg) -> dict:
     """Get summary metrics for dashboard."""
-    now = datetime.utcnow()
-    month_start = datetime(now.year, now.month, 1).isoformat() + "Z"
+    now = datetime.now(timezone.utc)
+    month_start = to_iso_utc(datetime(now.year, now.month, 1, tzinfo=timezone.utc))
     
     # Total active candidates
     total_candidates = db.execute(
@@ -100,15 +99,17 @@ def dashboard_metrics(data, auth: AuthContext | None, db, cfg) -> dict:
 def hiring_trends(data, auth: AuthContext | None, db, cfg) -> dict:
     """Get hiring trends over time."""
     period = str((data or {}).get("period") or "monthly").lower()
+    if period not in {"daily", "weekly", "monthly"}:
+        period = "monthly"
     date_from = str((data or {}).get("dateFrom") or "").strip()
     date_to = str((data or {}).get("dateTo") or "").strip()
     
     # Default to last 6 months
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     if not date_from:
-        date_from = (now - timedelta(days=180)).isoformat() + "Z"
+        date_from = to_iso_utc(now - timedelta(days=180))
     if not date_to:
-        date_to = now.isoformat() + "Z"
+        date_to = to_iso_utc(now)
     
     # Get audit logs for HIRED transitions
     logs = db.execute(
@@ -144,15 +145,16 @@ def hiring_trends(data, auth: AuthContext | None, db, cfg) -> dict:
 
 def source_distribution(data, auth: AuthContext | None, db, cfg) -> dict:
     """Get candidate source distribution."""
-    # Group by source field
-    sources = db.execute(
-        select(
-            Candidate.source,
-            func.count(Candidate.candidateId).label("count")
-        ).where(
-            Candidate.status == "ACTIVE"
-        ).group_by(Candidate.source)
-    ).all()
+    date_from = str((data or {}).get("dateFrom") or "").strip()
+    date_to = str((data or {}).get("dateTo") or "").strip()
+
+    q = select(Candidate.source, func.count(Candidate.candidateId).label("count")).where(Candidate.status == "ACTIVE")
+    if date_from:
+        q = q.where(Candidate.createdAt >= date_from)
+    if date_to:
+        q = q.where(Candidate.createdAt <= date_to)
+
+    sources = db.execute(q.group_by(Candidate.source)).all()
     
     result = []
     color_map = {
@@ -186,17 +188,21 @@ def sla_compliance_metrics(data, auth: AuthContext | None, db, cfg) -> dict:
     
     result = []
     for stage in stages:
-        planned_minutes = sla_map.get(stage, 60)  # Default 60 mins
+        planned_minutes = int(sla_map.get(stage, 60) or 0)
+        if planned_minutes <= 0:
+            planned_minutes = 60  # Default 60 mins
         
         # Get metrics for this stage
-        metrics = db.execute(
-            select(StepMetric).where(
-                and_(
-                    StepMetric.stepName == stage,
-                    StepMetric.completedAt.isnot(None)
-                )
-            ).order_by(StepMetric.createdAt.desc()).limit(100)
-        ).scalars().all()
+        metrics = (
+            db.execute(
+                select(StepMetric)
+                .where(and_(StepMetric.stepName == stage, StepMetric.actualMinutes.isnot(None)))
+                .order_by(StepMetric.createdAt.desc())
+                .limit(100)
+            )
+            .scalars()
+            .all()
+        )
         
         if not metrics:
             result.append({
@@ -210,21 +216,21 @@ def sla_compliance_metrics(data, auth: AuthContext | None, db, cfg) -> dict:
         
         compliant_count = 0
         total_minutes = 0
+        total_count = 0
         
         for m in metrics:
-            try:
-                start = datetime.fromisoformat(m.createdAt.replace("Z", "+00:00"))
-                end = datetime.fromisoformat(m.completedAt.replace("Z", "+00:00"))
-                duration_minutes = (end - start).total_seconds() / 60
-                total_minutes += duration_minutes
-                
-                if duration_minutes <= planned_minutes:
-                    compliant_count += 1
-            except Exception:
+            if m.actualMinutes is None:
                 continue
+            total_count += 1
+            actual = int(m.actualMinutes or 0)
+            total_minutes += actual
+
+            planned_eff = int(m.plannedMinutes or 0) if int(m.plannedMinutes or 0) > 0 else planned_minutes
+            if planned_eff <= 0 or actual <= planned_eff:
+                compliant_count += 1
         
-        compliance = (compliant_count / len(metrics) * 100) if metrics else 100
-        avg_minutes = total_minutes / len(metrics) if metrics else 0
+        compliance = (compliant_count / total_count * 100) if total_count else 100
+        avg_minutes = total_minutes / total_count if total_count else 0
         
         result.append({
             "stage": stage,
@@ -232,7 +238,7 @@ def sla_compliance_metrics(data, auth: AuthContext | None, db, cfg) -> dict:
             "compliance": round(compliance, 1),
             "avgMinutes": round(avg_minutes, 1),
             "plannedMinutes": planned_minutes,
-            "totalCount": len(metrics),
+            "totalCount": total_count,
         })
     
     return {"metrics": result}
@@ -240,10 +246,14 @@ def sla_compliance_metrics(data, auth: AuthContext | None, db, cfg) -> dict:
 
 def recent_activity(data, auth: AuthContext | None, db, cfg) -> dict:
     """Get recent activity from audit log."""
-    limit = int((data or {}).get("limit") or 20)
+    try:
+        limit = int((data or {}).get("limit") or 20)
+    except Exception:
+        limit = 20
+    limit = max(1, min(100, limit))
     entity_type = str((data or {}).get("entityType") or "").strip() or None
     
-    q = select(AuditLog).order_by(AuditLog.at.desc()).limit(min(limit, 100))
+    q = select(AuditLog).order_by(AuditLog.at.desc()).limit(limit)
     
     if entity_type:
         q = q.where(AuditLog.entityType == entity_type)
