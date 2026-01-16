@@ -15,38 +15,44 @@ from utils import AuthContext, to_iso_utc
 
 
 def candidate_pipeline_stats(data, auth: AuthContext | None, db, cfg) -> dict:
-    """Get candidate counts by pipeline stage."""
+    """Get candidate counts across the pipeline.
+
+    NOTE: In this codebase `Candidate.status` represents the pipeline stage
+    (there is no separate "ACTIVE/INACTIVE" flag, and no `Candidate.stage` column).
+    """
+    rows = db.execute(
+        select(func.upper(Candidate.status).label("status_u"), func.count(Candidate.candidateId).label("count"))
+        .group_by(func.upper(Candidate.status))
+        .order_by(func.upper(Candidate.status).asc())
+    ).all()
+
+    counts_by_status: dict[str, int] = {}
+    total = 0
+    for status_u, count in rows:
+        key = str(status_u or "").upper().strip()
+        c = int(count or 0)
+        counts_by_status[key] = c
+        total += c
+
+    def sum_statuses(statuses: list[str]) -> int:
+        return int(sum(int(counts_by_status.get(s, 0) or 0) for s in statuses))
+
     stages = [
-        ("HR_REVIEW", "HR Review"),
-        ("PRECALL", "Precall"),
-        ("PRE_INTERVIEW", "Pre-interview"),
-        ("INPERSON_TECH", "In-person Tech"),
-        ("EA_TECH", "EA Tech"),
-        ("FINAL_INTERVIEW", "Final Interview"),
-        ("FINAL_HOLD", "Final Hold"),
-        ("JOINING", "Joining"),
-        ("PROBATION", "Probation"),
-        ("HIRED", "Hired"),
+        {"stage": "SHORTLISTING", "label": "Shortlisting", "count": sum_statuses(["NEW", "HOLD"])},
+        {"stage": "OWNER_APPROVAL", "label": "Owner Approval", "count": sum_statuses(["OWNER", "OWNER_HOLD"])},
+        {"stage": "WALKIN", "label": "Walk-in", "count": sum_statuses(["WALKIN_PENDING", "WALKIN_SCHEDULED"])},
+        {"stage": "FINAL_DECISION", "label": "Final Decision", "count": sum_statuses(["FINAL_OWNER_PENDING", "FINAL_HOLD"])},
+        {"stage": "JOINING", "label": "Joining", "count": sum_statuses(["SELECTED", "JOINING"])},
+        {"stage": "HIRED", "label": "Hired", "count": sum_statuses(["JOINED", "PROBATION", "EMPLOYEE"])},
+        {"stage": "REJECTED", "label": "Rejected", "count": sum_statuses(["REJECTED"])},
     ]
-    
-    result = []
-    for stage_key, stage_label in stages:
-        count = db.execute(
-            select(func.count(Candidate.candidateId)).where(
-                and_(
-                    Candidate.status == "ACTIVE",
-                    Candidate.stage == stage_key
-                )
-            )
-        ).scalar() or 0
-        
-        result.append({
-            "stage": stage_key,
-            "label": stage_label,
-            "count": int(count),
-        })
-    
-    return {"stages": result}
+
+    known = sum(int(s["count"] or 0) for s in stages)
+    other = total - known
+    if other > 0:
+        stages.append({"stage": "OTHER", "label": "Other", "count": int(other)})
+
+    return {"stages": stages}
 
 
 def dashboard_metrics(data, auth: AuthContext | None, db, cfg) -> dict:
@@ -54,36 +60,31 @@ def dashboard_metrics(data, auth: AuthContext | None, db, cfg) -> dict:
     now = datetime.now(timezone.utc)
     month_start = to_iso_utc(datetime(now.year, now.month, 1, tzinfo=timezone.utc))
     
-    # Total active candidates
+    # Total candidates
     total_candidates = db.execute(
-        select(func.count(Candidate.candidateId)).where(
-            Candidate.status == "ACTIVE"
-        )
+        select(func.count(Candidate.candidateId))
     ).scalar() or 0
     
-    # Active requirements
+    # Active requirements (approved + not closed)
     active_requirements = db.execute(
         select(func.count(Requirement.requirementId)).where(
-            Requirement.status == "ACTIVE"
+            func.upper(Requirement.status) == "APPROVED"
         )
     ).scalar() or 0
     
-    # Pending approvals (candidates in FINAL_HOLD stage)
+    # Pending approvals (Owner approvals + final owner pending)
     pending_approvals = db.execute(
         select(func.count(Candidate.candidateId)).where(
-            and_(
-                Candidate.status == "ACTIVE",
-                Candidate.stage == "FINAL_HOLD"
-            )
+            func.upper(Candidate.status).in_(["OWNER", "OWNER_HOLD", "FINAL_OWNER_PENDING"])
         )
     ).scalar() or 0
     
-    # This month hires
+    # This month hires (candidates that actually joined in this month)
     this_month_hires = db.execute(
         select(func.count(Candidate.candidateId)).where(
             and_(
-                Candidate.stage == "HIRED",
-                Candidate.updatedAt >= month_start
+                Candidate.joinedAt != "",
+                Candidate.joinedAt >= month_start,
             )
         )
     ).scalar() or 0
@@ -110,36 +111,38 @@ def hiring_trends(data, auth: AuthContext | None, db, cfg) -> dict:
         date_from = to_iso_utc(now - timedelta(days=180))
     if not date_to:
         date_to = to_iso_utc(now)
-    
-    # Get audit logs for HIRED transitions
-    logs = db.execute(
-        select(AuditLog).where(
+
+    # JoinedAt is the canonical "hire" moment in this codebase (set by MARK_JOIN).
+    joined_rows = db.execute(
+        select(Candidate.joinedAt).where(
             and_(
-                AuditLog.action == "CANDIDATE_STAGE_UPDATE",
-                AuditLog.toState == "HIRED",
-                AuditLog.at >= date_from,
-                AuditLog.at <= date_to
+                Candidate.joinedAt != "",
+                Candidate.joinedAt >= date_from,
+                Candidate.joinedAt <= date_to,
             )
-        ).order_by(AuditLog.at.asc())
-    ).scalars().all()
-    
-    # Group by period
-    trend_data = {}
-    for log in logs:
+        )
+    ).all()
+
+    trend_data: dict[str, int] = {}
+    for (joined_at,) in joined_rows:
+        s = str(joined_at or "").strip()
+        if not s:
+            continue
         try:
-            dt = datetime.fromisoformat(log.at.replace("Z", "+00:00"))
-            if period == "daily":
-                key = dt.strftime("%Y-%m-%d")
-            elif period == "weekly":
-                key = dt.strftime("%Y-W%U")
-            else:
-                key = dt.strftime("%Y-%m")
-            
-            trend_data[key] = trend_data.get(key, 0) + 1
+            dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
         except Exception:
             continue
-    
-    result = [{"period": k, "count": v} for k, v in sorted(trend_data.items())]
+
+        if period == "daily":
+            key = dt.strftime("%Y-%m-%d")
+        elif period == "weekly":
+            key = dt.strftime("%Y-W%U")
+        else:
+            key = dt.strftime("%Y-%m")
+
+        trend_data[key] = int(trend_data.get(key, 0) or 0) + 1
+
+    result = [{"period": k, "count": int(v)} for k, v in sorted(trend_data.items())]
     return {"trends": result, "period": period}
 
 
@@ -148,7 +151,7 @@ def source_distribution(data, auth: AuthContext | None, db, cfg) -> dict:
     date_from = str((data or {}).get("dateFrom") or "").strip()
     date_to = str((data or {}).get("dateTo") or "").strip()
 
-    q = select(Candidate.source, func.count(Candidate.candidateId).label("count")).where(Candidate.status == "ACTIVE")
+    q = select(Candidate.source, func.count(Candidate.candidateId).label("count"))
     if date_from:
         q = q.where(Candidate.createdAt >= date_from)
     if date_to:
@@ -156,6 +159,11 @@ def source_distribution(data, auth: AuthContext | None, db, cfg) -> dict:
 
     sources = db.execute(q.group_by(Candidate.source)).all()
     
+    counts_by_source: dict[str, int] = {}
+    for source, count in sources:
+        key = str(source or "").strip().upper() or "OTHER"
+        counts_by_source[key] = int(counts_by_source.get(key, 0) or 0) + int(count or 0)
+
     result = []
     color_map = {
         "JOB_PORTAL": "blue",
@@ -165,8 +173,8 @@ def source_distribution(data, auth: AuthContext | None, db, cfg) -> dict:
         "AGENCY": "red",
     }
     
-    for source, count in sources:
-        source_key = str(source or "OTHER").upper()
+    for source_key in sorted(counts_by_source.keys()):
+        count = counts_by_source.get(source_key, 0)
         result.append({
             "source": source_key,
             "label": source_key.replace("_", " ").title(),
